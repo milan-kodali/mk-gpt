@@ -3,3 +3,4 @@ numpy
 dataclasses
 transformers
 tiktoken
+pytest
