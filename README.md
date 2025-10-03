@@ -1,2 +1,2 @@
-# mk-gpt
-llm learning
+## mk-gpt
+learning about llms
