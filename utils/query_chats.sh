@@ -1,5 +1,4 @@
 # Find all chats with a specific display name
-
 sqlite3 ~/Library/Messages/chat.db "
 SELECT ROWID, chat_identifier, display_name
 FROM chat
@@ -8,7 +7,6 @@ ORDER BY ROWID;
 "
 
 # Check timestamps of recent messages in a chat
-
 sqlite3 ~/Library/Messages/chat.db "
 SELECT datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') AS msg_time,
        h.id AS sender,

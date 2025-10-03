@@ -14,7 +14,7 @@ import sqlite3, re
 from pathlib import Path
 
 # --- Config ---
-DB_PATH = ""                     # query a copy, not the live DB
+DB_PATH = ""                                         # query a copy, not the live DB
 CHAT_ID = 1237                                       # chat ROWID for chat of interest
 TARGET_TEXT_MESSAGES = 60000                         # how many text messages to output
 PAGE_SIZE = 400                                      # raw rows fetched per page
