@@ -8,6 +8,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 import time
 import tiktoken
+import math
 
 @dataclass
 class GPTConfig:
@@ -45,13 +46,17 @@ class GPT2Attention(nn.Module):
         q = q.view(B, T, self.n_head, -1).transpose(1, 2) #(B, T, n_head, head_size) -> (B, n_head, T, head_size)
         v = v.view(B, T, self.n_head, -1).transpose(1, 2) #(B, T, n_head, head_size) -> (B, n_head, T, head_size)
 
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2, -1) * (k.size(-1))**-0.5 #(B,n_head,T,head_size) @ (B,n_head,head_size,T) -> (B,n_head,T,T)
-        wei = wei.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
-        wei = wei.softmax(dim = -1) # (B, n_head, T, T)
-        # wei = self.dropout1(wei) # (B, n_head, T, T)
+        # compute attention scores (replaced with flash attention below)
+        # wei = q @ k.transpose(-2, -1) * (k.size(-1))**-0.5 #(B,n_head,T,head_size) @ (B,n_head,head_size,T) -> (B,n_head,T,T)
+        # wei = wei.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+        # wei = wei.softmax(dim = -1) # (B, n_head, T, T)
+        # # wei = self.dropout1(wei) # (B, n_head, T, T)
+        # y = wei @ v  # (B, n_head, T, T) @ (B, n_head, T, head_size) -> (B, n_head, T, head_size)
+        
+        # use flash attention (algorithmically identical) for ~50% speedup
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # (B, n_head, T, head_size)
 
-        y = wei @ v  # (B, n_head, T, T) @ (B, n_head, T, head_size) -> (B, n_head, T, head_size)
+        
         y = y.transpose(1, 2).reshape(B, T, -1) # (B, n_head, T, head_size) -> (B, T, n_head * head_size)
 
         y = self.c_proj(y) 
@@ -276,40 +281,62 @@ max_length = 30
 '''
 Get Data & Optimize
 '''
-# get data
-train_loader = DataLoaderLite(B=32, T=1024) #Largest batch size for A100 w T=1024
+# get data, using largest batch size for A100 at T=1024
+train_loader = DataLoaderLite(B=96, T=1024)
 
 
-# set torch to use TF32 for faster training
+# Use TF32 for operations on FP32s
 torch.set_float32_matmul_precision('high')
 print("Initializing model\n-----")
 # initialize model
-model = GPT(GPTConfig())
+model = GPT(GPTConfig(vocab_size=50304)) #only need 50257, but use a nicer number for performance
 model.to(device)
-# compile model
+# compile model for performance
 if torch.cuda.is_available():
   print("Compiling model\n-----")
   model = torch.compile(model)
   torch.cuda.synchronize() # wait for all kernels to complete
   print("Model compiled\n-----")
 
-# optimize
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-steps = 50
+# learning rate schedule based on GPT-3 paper
+max_lr = 6e-4 #matches GPT-3 small
+min_lr = max_lr * 0.1
+warmup_steps = 10
+max_steps = 50
+def get_lr(step):
+  # start with linear warmup
+  if step < warmup_steps:
+    return max_lr * (step + 1) / warmup_steps
+  # end with min_lr
+  if step > max_steps:
+    return min_lr
+  # use cosine decay in between
+  decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps)
+  assert 0 <= decay_ratio <= 1
+  coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+  return min_lr + coeff * (max_lr - min_lr)
 
-for i in range(steps):
+# optimize
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8) #betas, eps match GPT3 paper
+
+for step in range(max_steps):
   # timing
   t0 = time.time()
 
   x, y = train_loader.next_batch()
   x, y = x.to(device), y.to(device)
   optimizer.zero_grad(set_to_none=True)
-
-  # try autocasting instead of TF32
+  # Use autocasting to cast some operations to BF16
   with torch.autocast(device_type=device, dtype=torch.bfloat16):
     logits, loss = model(x, y) 
 
   loss.backward()
+  # gradient clipping matching GPT-3 paper
+  norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+  # determine & set learning rate for this iteration; step
+  lr = get_lr(step)
+  for param_group in optimizer.param_groups:
+    param_group['lr'] = lr
   optimizer.step()
   # timing
   if torch.cuda.is_available():
@@ -318,7 +345,7 @@ for i in range(steps):
   dt = t1 - t0
   tokens_per_sec = (train_loader.B * train_loader.T) / dt
   
-  if i % (steps//50)== 0 or i == steps - 1:
-    print(f"step {i}: loss {loss.item():.4f}, dt {dt:.1f}s, tps {int(tokens_per_sec)}")
+  if step % (max_steps//50)== 0 or step == max_steps - 1:
+    print(f"step {step}: | loss {loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
 
 sample_sequences(num_return_sequences, max_length, device, model)
