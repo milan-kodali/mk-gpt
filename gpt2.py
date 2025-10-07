@@ -286,11 +286,13 @@ print("Initializing model\n-----")
 # initialize model
 model = GPT(GPTConfig())
 model.to(device)
-print("Compiling model\n-----")
-model = torch.compile(model)
+# compile model
 if torch.cuda.is_available():
+  print("Compiling model\n-----")
+  model = torch.compile(model)
   torch.cuda.synchronize() # wait for all kernels to complete
-print("Model compiled\n-----")
+  print("Model compiled\n-----")
+
 # optimize
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 steps = 50
