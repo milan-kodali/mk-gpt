@@ -218,9 +218,10 @@ class DataLoaderLite:
       self.current_position = 0
     return x, y
 
-def sample_sequences(num_return_sequences, max_length, device):
+def sample_sequences(num_return_sequences, max_length, device, model = None):
   # load model
-  model = GPT.from_pretrained("gpt2")
+  if model is None:
+    model = GPT.from_pretrained("gpt2")
   # model = GPT(GPTConfig())
   model.eval() # set model to evaluation mode
   model.to(device)
@@ -235,7 +236,7 @@ def sample_sequences(num_return_sequences, max_length, device):
   # sample
   while(x.size(1) < max_length):
     with torch.no_grad():
-      logits = model(x) # (B, T, vocab_size)
+      logits, loss = model(x) # (B, T, vocab_size)
       logits = logits[:, -1, :] # (B, vocab_size)
       probs = F.softmax(logits, dim = -1) # (B, vocab_size)
       # Add top-k sampling to match HF default
@@ -272,18 +273,21 @@ max_length = 30
 # sample from pretrained model
 # sample_sequences(num_return_sequences, max_length, device)
 
-# get data * optimize
+# get data & optimize
 model = GPT(GPTConfig())
 model.to(device)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 train_loader = DataLoaderLite(B=4, T=32)
-for i in range(50):
+steps = 2000
+for i in range(steps):
   x, y = train_loader.next_batch()
   x, y = x.to(device), y.to(device)
   optimizer.zero_grad(set_to_none=True)
   logits, loss = model(x, y) 
   loss.backward()
   optimizer.step()
-  print(f"step {i}: loss {loss.item()}")
+  if i % (steps//100)== 0 or i == steps - 1:
+    print(f"step {i}: loss {loss.item()}")
 
+sample_sequences(num_return_sequences, max_length, device, model)
