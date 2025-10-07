@@ -273,21 +273,38 @@ max_length = 30
 # sample from pretrained model
 # sample_sequences(num_return_sequences, max_length, device)
 
-# get data & optimize
+'''
+Get Data & Optimize
+'''
+# get data
+train_loader = DataLoaderLite(B=32, T=1024) #Largest batch size for A100 w T=1024
+
+# set torch to use TF32 for faster training
+torch.set_float32_matmul_precision('high')
+
+# initialize model
 model = GPT(GPTConfig())
 model.to(device)
 
+# optimize
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-train_loader = DataLoaderLite(B=4, T=32)
-steps = 2000
+steps = 50
 for i in range(steps):
+  # timing
+  t0 = time.time()
+
   x, y = train_loader.next_batch()
   x, y = x.to(device), y.to(device)
   optimizer.zero_grad(set_to_none=True)
   logits, loss = model(x, y) 
   loss.backward()
   optimizer.step()
-  if i % (steps//100)== 0 or i == steps - 1:
-    print(f"step {i}: loss {loss.item()}")
+  # timing
+  torch.cuda.synchronize() # wait for all kernels to complete
+  t1 = time.time()
+  dt = t1 - t0
+  tokens_per_sec = (train_loader.B * train_loader.T) / dt
+  if i % (steps//50)== 0 or i == steps - 1:
+    print(f"step {i}: loss {loss.item():.4f}, dt {dt:.1f}s, tps {int(tokens_per_sec)}")
 
 sample_sequences(num_return_sequences, max_length, device, model)
