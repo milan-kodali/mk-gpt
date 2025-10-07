@@ -201,7 +201,7 @@ class DataLoaderLite:
     tokens = enc.encode(data)
     self.tokens = torch.tensor(tokens)
     print(f"Loaded {len(tokens)} tokens")
-    print(f"1 epoch has {len(tokens) // (B * T)} batches")
+    print(f"1 epoch has {len(tokens) // (B * T)} batches\n-----")
 
     # state
     self.current_position = 0
@@ -279,16 +279,22 @@ Get Data & Optimize
 # get data
 train_loader = DataLoaderLite(B=32, T=1024) #Largest batch size for A100 w T=1024
 
+
 # set torch to use TF32 for faster training
 torch.set_float32_matmul_precision('high')
-
+print("Initializing model\n-----")
 # initialize model
 model = GPT(GPTConfig())
 model.to(device)
-
+print("Compiling model\n-----")
+model = torch.compile(model)
+if torch.cuda.is_available():
+  torch.cuda.synchronize() # wait for all kernels to complete
+print("Model compiled\n-----")
 # optimize
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 steps = 50
+
 for i in range(steps):
   # timing
   t0 = time.time()
@@ -296,7 +302,11 @@ for i in range(steps):
   x, y = train_loader.next_batch()
   x, y = x.to(device), y.to(device)
   optimizer.zero_grad(set_to_none=True)
-  logits, loss = model(x, y) 
+
+  # try autocasting instead of TF32
+  with torch.autocast(device_type=device, dtype=torch.bfloat16):
+    logits, loss = model(x, y) 
+
   loss.backward()
   optimizer.step()
   # timing
