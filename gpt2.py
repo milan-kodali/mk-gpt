@@ -281,9 +281,10 @@ max_length = 30
 '''
 Get Data & Optimize
 '''
-# get data, using largest batch size for A100 at T=1024
-train_loader = DataLoaderLite(B=96, T=1024)
-
+# get data
+B, T = 4, 1024 # small batch size for CPU training
+if torch.cuda.is_available(): B = 96 # largest batch size that fits on A100 memory
+train_loader = DataLoaderLite(B, T)
 
 # Use TF32 for operations on FP32s
 torch.set_float32_matmul_precision('high')
