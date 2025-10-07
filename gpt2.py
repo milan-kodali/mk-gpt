@@ -303,16 +303,17 @@ if torch.cuda.is_available():
 max_lr = 6e-4 #matches GPT-3 small
 min_lr = max_lr * 0.1
 warmup_steps = 10
+decay_horizon = 40
 max_steps = 50
 def get_lr(step):
   # start with linear warmup
   if step < warmup_steps:
     return max_lr * (step + 1) / warmup_steps
   # end with min_lr
-  if step > max_steps:
+  if step > decay_horizon:
     return min_lr
   # use cosine decay in between
-  decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps)
+  decay_ratio = (step - warmup_steps) / (decay_horizon - warmup_steps)
   assert 0 <= decay_ratio <= 1
   coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
   return min_lr + coeff * (max_lr - min_lr)
