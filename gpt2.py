@@ -310,7 +310,7 @@ def get_lr(step):
   if step < warmup_steps:
     return max_lr * (step + 1) / warmup_steps
   # end with min_lr
-  if step > decay_horizon: 
+  if step > decay_horizon:
     return min_lr
   # use cosine decay in between
   decay_ratio = (step - warmup_steps) / (decay_horizon - warmup_steps)
