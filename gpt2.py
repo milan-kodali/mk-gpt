@@ -300,10 +300,12 @@ for i in range(steps):
   loss.backward()
   optimizer.step()
   # timing
-  torch.cuda.synchronize() # wait for all kernels to complete
+  if torch.cuda.is_available():
+    torch.cuda.synchronize() # wait for all kernels to complete
   t1 = time.time()
   dt = t1 - t0
   tokens_per_sec = (train_loader.B * train_loader.T) / dt
+  
   if i % (steps//50)== 0 or i == steps - 1:
     print(f"step {i}: loss {loss.item():.4f}, dt {dt:.1f}s, tps {int(tokens_per_sec)}")
 
