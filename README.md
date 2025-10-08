@@ -9,7 +9,7 @@ pip install -r requirements.txt
 ```
 
 ## GPU Tips
-- Check status: `nvidia-smi` or `watch nvidia-smi`
+- Monitor status: `watch nvidia-smi`
 - For [A100](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf) B=48 seems to maximize available memory given T=1024, when using torch.autocast to BF16
 - Runpod workflow
   - Generate SSH keys
