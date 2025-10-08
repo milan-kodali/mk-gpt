@@ -319,7 +319,7 @@ def get_lr(step):
   return min_lr + coeff * (max_lr - min_lr)
 
 # optimize
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8) #betas, eps match GPT3 paper
+optimizer = torch.optim.AdamW(model.parameters(), lr=6e-4, betas=(0.9, 0.95), eps=1e-8) #betas, eps match GPT3 paper
 
 for step in range(max_steps):
   # timing
