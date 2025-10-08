@@ -304,10 +304,16 @@ max_length = 30
 '''
 Get Data & Optimize
 '''
-# get data
-B, T = 4, 1024 # small batch size for CPU training
-if torch.cuda.is_available(): B = 96 # largest batch size that fits on A100 memory
-train_loader = DataLoaderLite(B, T)
+# batch hyperparametrs, using gradient accumulation on single GPU
+total_batch_size = 524288 # 2^19, matching GPT-3 batch size, in # of tokens
+T = 1024 # sequence length
+B = 4 # small micro-batch size for CPU training
+if torch.cuda.is_available(): B = 64 # largest power-of-2 micro-batch size that fits on A100 
+assert total_batch_size % (B * T) == 0, "total_batch_size must be divisible by (B * T)"
+grad_accum_steps = total_batch_size // (B * T)
+print(f"Using grad accumulation w/ {grad_accum_steps} steps per batch of {total_batch_size} tokens\n-----")
+
+train_loader = DataLoaderLite(B=B, T=T)
 
 # Use TF32 for operations on FP32s
 torch.set_float32_matmul_precision('high')
@@ -325,9 +331,9 @@ if torch.cuda.is_available():
 # learning rate schedule based on GPT-3 paper
 max_lr = 6e-4 #matches GPT-3 small
 min_lr = max_lr * 0.1
-warmup_steps = 10
-decay_horizon = 40
-max_steps = 50
+warmup_steps = 10 * grad_accum_steps
+decay_horizon = 40 * grad_accum_steps
+max_steps = 50 * grad_accum_steps
 def get_lr(step):
   # start with linear warmup
   if step < warmup_steps:
@@ -350,7 +356,10 @@ for step in range(max_steps):
 
   x, y = train_loader.next_batch()
   x, y = x.to(device), y.to(device)
-  optimizer.zero_grad(set_to_none=True)
+  # flush gradient if starting a new batch
+  if step % grad_accum_steps == 0:
+    print("flushing gradient")
+    optimizer.zero_grad(set_to_none=True)
   # Use autocasting to cast some operations to BF16
   with torch.autocast(device_type=device, dtype=torch.bfloat16):
     logits, loss = model(x, y) 
@@ -362,7 +371,10 @@ for step in range(max_steps):
   lr = get_lr(step)
   for param_group in optimizer.param_groups:
     param_group['lr'] = lr
-  optimizer.step()
+  # step optimizer if grad accumulation is complete
+  if (step+1) % grad_accum_steps == 0:
+    print("stepping optimizer")
+    optimizer.step()
   # timing
   if torch.cuda.is_available():
     torch.cuda.synchronize() # wait for all kernels to complete
@@ -370,7 +382,7 @@ for step in range(max_steps):
   dt = t1 - t0
   tokens_per_sec = (train_loader.B * train_loader.T) / dt
   
-  if step % (max_steps//50)== 0 or step == max_steps - 1:
-    print(f"step {step}: | loss {loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
+  # if step % (max_steps//50)== 0 or step == max_steps - 1:
+  print(f"step {step}: | loss {loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
 
 sample_sequences(num_return_sequences, max_length, device, model)
