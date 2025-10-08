@@ -331,9 +331,9 @@ if torch.cuda.is_available():
 # learning rate schedule based on GPT-3 paper
 max_lr = 6e-4 #matches GPT-3 small
 min_lr = max_lr * 0.1
-warmup_steps = 10 * grad_accum_steps
-decay_horizon = 40 * grad_accum_steps
-max_steps = 50 * grad_accum_steps
+warmup_steps = 10
+decay_horizon = 40
+max_steps = 50
 def get_lr(step):
   # start with linear warmup
   if step < warmup_steps:
@@ -353,28 +353,23 @@ optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate = 6e-4,
 for step in range(max_steps):
   # timing
   t0 = time.time()
-
-  x, y = train_loader.next_batch()
-  x, y = x.to(device), y.to(device)
-  # flush gradient if starting a new batch
-  if step % grad_accum_steps == 0:
-    print("flushing gradient")
-    optimizer.zero_grad(set_to_none=True)
-  # Use autocasting to cast some operations to BF16
-  with torch.autocast(device_type=device, dtype=torch.bfloat16):
-    logits, loss = model(x, y) 
-
-  loss.backward()
+  optimizer.zero_grad(set_to_none=True)
+  # gradient accumulation
+  for micro_step in range(grad_accum_steps):
+    x, y = train_loader.next_batch()
+    x, y = x.to(device), y.to(device)
+    # Use autocasting to cast some operations to BF16
+    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+      logits, loss = model(x, y) 
+    loss.backward()
   # gradient clipping matching GPT-3 paper
   norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
   # determine & set learning rate for this iteration; step
   lr = get_lr(step)
   for param_group in optimizer.param_groups:
     param_group['lr'] = lr
-  # step optimizer if grad accumulation is complete
-  if (step+1) % grad_accum_steps == 0:
-    print("stepping optimizer")
-    optimizer.step()
+
+  optimizer.step()
   # timing
   if torch.cuda.is_available():
     torch.cuda.synchronize() # wait for all kernels to complete
@@ -382,7 +377,7 @@ for step in range(max_steps):
   dt = t1 - t0
   tokens_per_sec = (train_loader.B * train_loader.T) / dt
   
-  # if step % (max_steps//50)== 0 or step == max_steps - 1:
-  print(f"step {step}: | loss {loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
+  if step % (max_steps//50)== 0 or step == max_steps - 1:
+    print(f"step {step}: | loss {loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
 
 sample_sequences(num_return_sequences, max_length, device, model)
