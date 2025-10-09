@@ -5,3 +5,4 @@ transformers
 hf_transfer
 tiktoken
 pytest
+datasets
