@@ -354,6 +354,8 @@ for step in range(max_steps):
   # timing
   t0 = time.time()
   optimizer.zero_grad(set_to_none=True)
+  #track loss across micro-batches
+  accum_loss = 0
   # gradient accumulation
   for micro_step in range(grad_accum_steps):
     x, y = train_loader.next_batch()
@@ -361,6 +363,9 @@ for step in range(max_steps):
     # Use autocasting to cast some operations to BF16
     with torch.autocast(device_type=device, dtype=torch.bfloat16):
       logits, loss = model(x, y) 
+    # loss should be averaged across batch size, so need to divide by grad_accum_steps to avoid oversized gradients
+    loss = loss / grad_accum_steps
+    accum_loss += loss.detach()
     loss.backward()
   # gradient clipping matching GPT-3 paper
   norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -375,9 +380,9 @@ for step in range(max_steps):
     torch.cuda.synchronize() # wait for all kernels to complete
   t1 = time.time()
   dt = t1 - t0
-  tokens_per_sec = (train_loader.B * train_loader.T) / dt
+  tokens_per_sec = (train_loader.B * train_loader.T * grad_accum_steps) / dt
   
   if step % (max_steps//50)== 0 or step == max_steps - 1:
-    print(f"step {step}: | loss {loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
+    print(f"step {step}: | loss {accum_loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
 
 sample_sequences(num_return_sequences, max_length, device, model)
