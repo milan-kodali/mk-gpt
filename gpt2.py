@@ -15,6 +15,8 @@ import math
 import inspect
 import os
 import numpy as np
+import sys
+
 
 @dataclass
 class GPTConfig:
@@ -232,8 +234,7 @@ class DataLoaderLite:
     assert split in ['train', 'val'], "split must be either 'train' or 'val'"
     self.split = split
 
-    # data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fineweb-edu10b')
-    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'mini_shards')
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fineweb-edu10b')
     self.shards = [f for f in os.listdir(data_dir) if f.startswith(f'fineweb_edu10b_{self.split}') and f.endswith('.npy')]
     self.shards = [os.path.join(data_dir, f) for f in self.shards]
     self.shards = sorted(self.shards)
@@ -251,16 +252,11 @@ class DataLoaderLite:
     self.current_position = rank * B * T
     
   def next_batch(self):
-    B, T, world_size, rank = self.B, self.T, self.world_size, self.rank
+    B, T = self.B, self.T
     buf = self.tokens[self.current_position:self.current_position + B*T + 1]
     x = buf[:-1].view(B, T)
     y = buf[1:].view(B, T)
-    
-    self.current_position += B * T * world_size
-    # reset if next batch would be out of bounds
-    if self.current_position + B * T * world_size + 1 > len(self.tokens):
-      self.current_position = rank * B * T
-      self.next_shard()
+    self.step(1)
     return x, y
 
   def next_shard(self):
@@ -271,6 +267,18 @@ class DataLoaderLite:
       self.shard_index = 0
     tokens = np.load(self.shards[self.shard_index])
     self.tokens = torch.tensor(tokens, dtype=torch.int)
+
+  def step(self, num_steps = 1):
+    for i in range(num_steps):
+      B, T, world_size, rank = self.B, self.T, self.world_size, self.rank
+      self.current_position += B * T * world_size
+      # reset if next batch would be out of bounds
+      next_position = self.current_position + B * T * world_size
+      token_length = len(self.tokens)
+      if next_position > token_length:
+        self.next_shard()
+        self.current_position = rank * B * T
+        
 
 
 def sample_sequences(num_return_sequences, max_length, device, model = None):
@@ -304,12 +312,12 @@ def sample_sequences(num_return_sequences, max_length, device, model = None):
   for i in range(num_return_sequences):
     tokens = x[i, :max_length].tolist()
     decoded = enc.decode(tokens)
-    print(f"> {i}: {decoded}")
+    print(f"> {i}: {decoded}\n")
 
 
-# ---------------------------------------------------
-# run the training loop
-# ---------------------------------------------------
+"""
+Run the training loop
+"""
 
 # set up DDP using env variables set by torchrun (RANK, LOCAL_RANK and WORLD_SIZE)
 # use `torchrun --standalone --nproc_per_node=2 gpt2.py` to run on 2 GPUs
@@ -349,9 +357,10 @@ max_length = 30
 # sample from pretrained model
 # sample_sequences(num_return_sequences, max_length, device)
 
-'''
+"""
 Get Data & Optimize
-'''
+"""
+
 # batch hyperparametrs, using gradient accumulation on single GPU
 total_batch_size = 524288 # 2^19, matching GPT-3 batch size, in # of tokens
 T = 1024 # sequence length
@@ -364,16 +373,16 @@ if master_process: print(f"Using grad accumulation w/ {grad_accum_steps} steps p
 train_loader = DataLoaderLite(B=B, T=T, rank=ddp_rank, world_size=ddp_world_size, split='train')
 val_loader = DataLoaderLite(B=B, T=T, rank=0, world_size=1, split='val')
 
-def evaluate(model, device, loader):
+def evaluate(model, device, val_loader):
   model.eval()
   total_loss = 0
   with torch.no_grad():
-    for x, y in loader.next_batch():
-      x, y = x.to(device), y.to(device)
-      logits, loss = model(x, y)
-      total_loss += loss.item()
+    x, y = val_loader.next_batch()
+    x, y = x.to(device), y.to(device)
+    logits, loss = model(x, y)
+    print(f"-----\nval loss: {loss.item():.4f}\n-----")
   model.train()
-  return total_loss / len(loader)
+  return loss.item()
 
 # Use TF32 for operations on FP32s
 torch.set_float32_matmul_precision('high')
@@ -390,11 +399,13 @@ if "cuda" in device:
 
 # learning rate schedule based on GPT-3 paper
 max_lr = 6e-4 # matches GPT-3 small
-min_lr = max_lr * 0.1
-warmup_steps = 10
-decay_horizon = 40
-max_steps = 250
-checkpoint_interval = 20
+min_lr = max_lr * 0.1 # matches GPT-3 small
+warmup_steps = 715 #375e6 warmup tokens / 524288 batch size = 715 steps
+max_steps = 19073 #10e9 tokens / 524288 batch size = 19073 steps
+decay_horizon = max_steps * .87 # proportional to gpt-3 decay horizon
+start_step = 0
+checkpoint_interval = 100
+
 def get_lr(step):
   # start with linear warmup
   if step < warmup_steps:
@@ -411,11 +422,27 @@ def get_lr(step):
 # optimize
 optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate = 6e-4, device = device)
 
+model_file_name = "mkgpt2.pt"
+if len(sys.argv) > 1:  
+  model_file_name = sys.argv[1]
+
+  if os.path.exists(model_file_name):
+    if master_process: print(f"Loading model weights from {model_file_name}\n-----")
+    checkpoint = torch.load(model_file_name)
+    model.load_state_dict(checkpoint['model'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    start_step = checkpoint['step'] + 1
+    train_loader.step(start_step * grad_accum_steps)
+    val_loader.step(start_step * grad_accum_steps)
+    if master_process: print(f"Starting from step {start_step}\n-----")
+  else:
+    if master_process: print("No saved model found, starting from scratch\n-----")
+
 # wrap model in DDP if applicable
 if ddp:
   model = DDP(model, device_ids=[ddp_local_rank])
 
-for step in range(max_steps):
+for step in range(start_step, max_steps):
   # timing
   t0 = time.time()
   optimizer.zero_grad(set_to_none=True)
@@ -453,7 +480,10 @@ for step in range(max_steps):
   
   if master_process:
     print(f"step {step}: | train_loss {accum_loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
-
+    if (step + 1) % checkpoint_interval == 0:
+      evaluate(model, device, val_loader)
+      torch.save({'model': model.module.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, model_file_name)
+      
 if ddp:
   destroy_process_group()
 
