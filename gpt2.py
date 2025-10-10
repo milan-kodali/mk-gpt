@@ -14,6 +14,7 @@ import tiktoken
 import math
 import inspect
 import os
+import numpy as np
 
 @dataclass
 class GPTConfig:
@@ -222,23 +223,33 @@ class GPT(nn.Module):
     return optimizer
 
 class DataLoaderLite:
-  def __init__(self, B, T, rank, world_size):
+  def __init__(self, B, T, rank, world_size, split = 'train'):
     self.B = B
     self.T = T
     self.rank = rank
     self.world_size = world_size
-    # load tokens from disk and save to memory
-    with open('inputs/shakespeare.txt', 'r') as f:
-      data = f.read()
-    enc = tiktoken.get_encoding("gpt2")
-    tokens = enc.encode(data)
-    self.tokens = torch.tensor(tokens)
-    print(f"Loaded {len(tokens)} tokens")
-    print(f"1 epoch has {len(tokens) // (B * T)} batches\n-----")
+
+    assert split in ['train', 'val'], "split must be either 'train' or 'val'"
+    self.split = split
+
+    # data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fineweb-edu10b')
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'mini_shards')
+    self.shards = [f for f in os.listdir(data_dir) if f.startswith(f'fineweb_edu10b_{self.split}') and f.endswith('.npy')]
+    self.shards = [os.path.join(data_dir, f) for f in self.shards]
+    self.shards = sorted(self.shards)
+    self.shard_count = len(self.shards)
+    self.shard_index = 0
+    print(f"Found {len(self.shards)} shards for {split} split")
+    
+    # load tokens from first shard as numpy array
+    tokens = np.load(self.shards[self.shard_index])    
+    self.tokens = torch.tensor(tokens, dtype=torch.int)
+    print(f"Loaded {len(self.tokens)} tokens from shard {self.shard_index}")
+    print(f"1 epoch has approx {len(tokens) * self.shard_count // (B * T)} minibatches\n-----")
 
     # state
     self.current_position = rank * B * T
-
+    
   def next_batch(self):
     B, T, world_size, rank = self.B, self.T, self.world_size, self.rank
     buf = self.tokens[self.current_position:self.current_position + B*T + 1]
@@ -249,7 +260,18 @@ class DataLoaderLite:
     # reset if next batch would be out of bounds
     if self.current_position + B * T * world_size + 1 > len(self.tokens):
       self.current_position = rank * B * T
+      self.next_shard()
     return x, y
+
+  def next_shard(self):
+    print(f"-----\nLoading shard {self.shard_index + 1} of {self.shard_count} for GPU {self.rank}\n-----")
+    if self.shard_index < self.shard_count - 1:
+      self.shard_index += 1
+    else:
+      self.shard_index = 0
+    tokens = np.load(self.shards[self.shard_index])
+    self.tokens = torch.tensor(tokens, dtype=torch.int)
+
 
 def sample_sequences(num_return_sequences, max_length, device, model = None):
   # load model
@@ -310,7 +332,7 @@ else:
   ddp_world_size = 1
   master_process = True
   # auto-detect device
-  device = "cuda:1" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"
+  device = "cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"
   print(f"Using {device} device\n-----")
 
 # Set seed across all device types
@@ -339,7 +361,19 @@ assert total_batch_size % (B * T * ddp_world_size) == 0, "total_batch_size must 
 grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
 if master_process: print(f"Using grad accumulation w/ {grad_accum_steps} steps per batch of {total_batch_size} tokens\n-----")
 
-train_loader = DataLoaderLite(B=B, T=T, rank=ddp_rank, world_size=ddp_world_size)
+train_loader = DataLoaderLite(B=B, T=T, rank=ddp_rank, world_size=ddp_world_size, split='train')
+val_loader = DataLoaderLite(B=B, T=T, rank=0, world_size=1, split='val')
+
+def evaluate(model, device, loader):
+  model.eval()
+  total_loss = 0
+  with torch.no_grad():
+    for x, y in loader.next_batch():
+      x, y = x.to(device), y.to(device)
+      logits, loss = model(x, y)
+      total_loss += loss.item()
+  model.train()
+  return total_loss / len(loader)
 
 # Use TF32 for operations on FP32s
 torch.set_float32_matmul_precision('high')
@@ -355,11 +389,12 @@ if "cuda" in device:
   if master_process: print("Model compiled\n-----")
 
 # learning rate schedule based on GPT-3 paper
-max_lr = 6e-4 #matches GPT-3 small
+max_lr = 6e-4 # matches GPT-3 small
 min_lr = max_lr * 0.1
 warmup_steps = 10
 decay_horizon = 40
-max_steps = 50
+max_steps = 250
+checkpoint_interval = 20
 def get_lr(step):
   # start with linear warmup
   if step < warmup_steps:
@@ -417,7 +452,7 @@ for step in range(max_steps):
   tokens_per_sec = (train_loader.B * train_loader.T * grad_accum_steps * ddp_world_size) / dt
   
   if master_process:
-    print(f"step {step}: | loss {accum_loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
+    print(f"step {step}: | train_loss {accum_loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
 
 if ddp:
   destroy_process_group()
