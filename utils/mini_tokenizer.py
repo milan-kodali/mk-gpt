@@ -12,7 +12,7 @@ from tqdm import tqdm
 #----
 local_dir = "../data/mini_shards"
 sample_name = "sample-10BT"
-shard_size = int(1e7)
+shard_size = int(2e6)
 nprocs = max(1, os.cpu_count())
 
 # set data cache dir
