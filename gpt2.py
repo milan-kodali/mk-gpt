@@ -260,7 +260,7 @@ class DataLoaderLite:
     return x, y
 
   def next_shard(self):
-    print(f"-----\nLoading shard {self.shard_index + 1} of {self.shard_count} for GPU {self.rank}\n-----")
+    print(f"-----\nLoading {self.split} shard {self.shard_index + 1} of {self.shard_count} for GPU {self.rank}\n-----")
     if self.shard_index < self.shard_count - 1:
       self.shard_index += 1
     else:
