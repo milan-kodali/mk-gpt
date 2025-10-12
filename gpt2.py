@@ -320,7 +320,8 @@ Run the training loop
 """
 
 # set up DDP using env variables set by torchrun (RANK, LOCAL_RANK and WORLD_SIZE)
-# use `torchrun --standalone --nproc_per_node=2 gpt2.py` to run on 2 GPUs
+# use `torchrun --standalone --nproc_per_node=4 gpt2.py` to run on 4 GPUs
+# GPU count must be power of 2 for batch size assumptions
 ddp = int(os.environ.get("RANK", -1)) != -1
 if ddp:
   # current DDP requires CUDA
