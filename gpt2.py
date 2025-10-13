@@ -234,7 +234,7 @@ class DataLoaderLite:
     assert split in ['train', 'val'], "split must be either 'train' or 'val'"
     self.split = split
 
-    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fineweb-edu10b')
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'storage', 'data', 'fineweb-edu10b')
     self.shards = [f for f in os.listdir(data_dir) if f.startswith(f'fineweb_edu10b_{self.split}') and f.endswith('.npy')]
     self.shards = [os.path.join(data_dir, f) for f in self.shards]
     self.shards = sorted(self.shards)
@@ -279,8 +279,6 @@ class DataLoaderLite:
         self.next_shard()
         self.current_position = rank * B * T
         
-
-
 def sample_sequences(num_return_sequences, max_length, device, model = None):
   # load model
   if model is None:
@@ -424,12 +422,13 @@ def get_lr(step):
 optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate = 6e-4, device = device)
 
 model_file_name = "mkgpt2.pt"
+checkpoint_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'storage', 'checkpoints')
 if len(sys.argv) > 1:  
   model_file_name = sys.argv[1]
-
-  if os.path.exists(model_file_name):
+  model_file_path = os.path.join(checkpoint_dir, model_file_name)
+  if os.path.exists(model_file_path):
     if master_process: print(f"Loading model weights from {model_file_name}\n-----")
-    checkpoint = torch.load(model_file_name)
+    checkpoint = torch.load(model_file_path)
     model.load_state_dict(checkpoint['model'])
     optimizer.load_state_dict(checkpoint['optimizer'])
     start_step = checkpoint['step'] + 1
@@ -483,7 +482,8 @@ for step in range(start_step, max_steps):
     print(f"step {step}: | train_loss {accum_loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
     if (step + 1) % checkpoint_interval == 0:
       evaluate(model, device, val_loader)
-      torch.save({'model': model.module.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, model_file_name)
+      model = model.module if ddp else model
+      torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, os.path.join(checkpoint_dir, model_file_name))
       
 if ddp:
   destroy_process_group()
