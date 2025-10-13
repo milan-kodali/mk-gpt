@@ -11,14 +11,14 @@ echo -e "aws cli setup complete\n-----"
 
 # download data from s3
 echo "downloading from s3"
-FOLDERS=("test" "checkpoints" "data")
+FOLDERS=("checkpoints" "data")
 for folder in ${FOLDERS[@]}; do
     SRC="s3://$S3_BUCKET/$folder/"
     DEST="./storage/$folder/"
     mkdir -p "$DEST"
     aws s3 sync "$SRC" "$DEST"
 done
-echo "download complete\n-----"
+echo -e "download complete\n-----"
 
 # Exit immediately if any future command fails
 set -e
