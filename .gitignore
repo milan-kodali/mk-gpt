@@ -1,4 +1,4 @@
 .DS_Store
 utils/chat_copy.db
 __pycache__/
-/data
+/storage
