@@ -244,17 +244,17 @@ class DataLoaderLite:
     shards = [os.path.join(data_dir, f) for f in shards]
     self.shards = sorted(shards)
     self.shard_count = len(self.shards)
-    self.shard_index = 0
+    assert self.shard_count > 0, f"no shards found for {split} split"
     if self.verbose: print(f"Found {len(self.shards)} shards for {split} split")
-    
-    # load tokens from first shard as numpy array
-    self.tokens = load_tokens(self.shards[self.shard_index])    
-    if self.verbose: print(f"Loaded {len(self.tokens)} tokens from shard {self.shard_index}")
-    if self.verbose: print(f"1 epoch has approx {len(self.tokens) * self.shard_count // (B * T)} minibatches\n-----")
 
-    # state
-    self.current_position = rank * B * T
+    # set initial state
+    self.reset()
     
+  def reset(self):
+    self.shard_index = 0
+    self.tokens = load_tokens(self.shards[self.shard_index])
+    self.current_position = self.rank * self.B * self.T
+  
   def next_batch(self):
     B, T = self.B, self.T
     buf = self.tokens[self.current_position:self.current_position + B*T + 1]
