@@ -2,3 +2,4 @@
 utils/chat_copy.db
 __pycache__/
 /storage
+/data
