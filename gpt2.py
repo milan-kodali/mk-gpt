@@ -292,7 +292,8 @@ def sample_sequences(num_return_sequences, max_length, device, model = None):
   tokens = torch.tensor(tokens, dtype=torch.long)
   tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
   x = tokens.to(device) # (B = num_return_sequences, prefix_length)
-
+  sample_rng = torch.Generator(device=device)
+  sample_rng.manual_seed(42)
   # sample
   while(x.size(1) < max_length):
     with torch.no_grad():
@@ -301,7 +302,7 @@ def sample_sequences(num_return_sequences, max_length, device, model = None):
       probs = F.softmax(logits, dim = -1) # (B, vocab_size)
       # Add top-k sampling to match HF default
       topk_probs, topk_indices = torch.topk(probs, 50, dim = -1) # (B, 50) for both
-      ix = torch.multinomial(topk_probs, 1) # (B, 1)
+      ix = torch.multinomial(topk_probs, 1, generator=sample_rng) # (B, 1)
       x_col = torch.gather(topk_indices, -1, ix) # (B, 1)
       x = torch.cat((x, x_col), dim = 1) # (B, T + 1)
 
@@ -376,7 +377,7 @@ def evaluate(model, device, val_loader):
   val_loader.reset()
   with torch.no_grad():
     val_loss_accum = 0.0
-    val_loss_steps = 10
+    val_loss_steps = 20
     for _ in range(val_loss_steps):
       x, y = val_loader.next_batch()
       x, y = x.to(device), y.to(device)
@@ -490,6 +491,7 @@ for step in range(start_step, max_steps):
   if step % checkpoint_interval == 0:
     evaluate(model, device, val_loader)
     if step > 0 and master_process:
+      # save checkpoint and sample sequences
       model_to_save = model.module if ddp else model
       torch.save({'model': model_to_save.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, os.path.join(checkpoint_dir, model_file_name))
       sample_sequences(num_return_sequences, max_length, device, model)
