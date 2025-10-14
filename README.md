@@ -9,7 +9,7 @@ learning about llms
 
 ### GPU Tips
 - Monitor status: `watch nvidia-smi`
-- For [A100](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf) B=48 seems to maximize available memory given T=1024, when using torch.autocast to BF16
+- For [A100](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf) B=64 seems to maximize available memory given T=1024
 - Runpod workflow
   - Generate SSH keys
   - Add keys to Runpod console
