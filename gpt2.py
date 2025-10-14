@@ -317,7 +317,7 @@ Run the training loop
 """
 
 # set up DDP using env variables set by torchrun (RANK, LOCAL_RANK and WORLD_SIZE)
-# use `torchrun --standalone --nproc_per_node=4 gpt2.py` to run on 4 GPUs
+# use `torchrun --standalone --nproc_per_node=4 gpt2.py third_attempt.pt` to run on 4 GPUs
 # GPU count must be power of 2 for batch size assumptions
 ddp = int(os.environ.get("RANK", -1)) != -1
 if ddp:
@@ -486,14 +486,13 @@ for step in range(start_step, max_steps):
   dt = t1 - t0
   tokens_per_sec = (train_loader.B * train_loader.T * grad_accum_steps * ddp_world_size) / dt
   
-  if master_process:
-    print(f"step {step}: | train_loss {accum_loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
-    if step % checkpoint_interval == 0:
-      evaluate(model, device, val_loader)
-      if step > 0:
-        model_to_save = model.module if ddp else model
-        torch.save({'model': model_to_save.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, os.path.join(checkpoint_dir, model_file_name))
-        sample_sequences(num_return_sequences, max_length, device, model)
+  if master_process: print(f"step {step}: | train_loss {accum_loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
+  if step % checkpoint_interval == 0:
+    evaluate(model, device, val_loader)
+    if step > 0 and master_process:
+      model_to_save = model.module if ddp else model
+      torch.save({'model': model_to_save.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, os.path.join(checkpoint_dir, model_file_name))
+      sample_sequences(num_return_sequences, max_length, device, model)
       
 if ddp:
   destroy_process_group()
