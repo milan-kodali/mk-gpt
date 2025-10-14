@@ -369,7 +369,7 @@ grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
 if master_process: print(f"Using grad accumulation w/ {grad_accum_steps} steps per batch of {total_batch_size} tokens\n-----")
 
 train_loader = DataLoaderLite(B=B, T=T, rank=ddp_rank, world_size=ddp_world_size, split='train', verbose=master_process)
-val_loader = DataLoaderLite(B=B, T=T, rank=0, world_size=1, split='val', verbose=master_process)
+val_loader = DataLoaderLite(B=B, T=T, rank=ddp_rank, world_size=ddp_world_size, split='val', verbose=master_process)
 
 def evaluate(model, device, val_loader):
   model.eval()
@@ -481,8 +481,8 @@ for step in range(start_step, max_steps):
     print(f"step {step}: | train_loss {accum_loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
     if (step + 1) % checkpoint_interval == 0:
       evaluate(model, device, val_loader)
-      model = model.module if ddp else model
-      torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, os.path.join(checkpoint_dir, model_file_name))
+      model_to_save = model.module if ddp else model
+      torch.save({'model': model_to_save.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, os.path.join(checkpoint_dir, model_file_name))
       
 if ddp:
   destroy_process_group()
