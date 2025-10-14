@@ -5,6 +5,7 @@ learning about llms
 1. Add evals (eg HellaSwag)
 2. Add logging to file
 3. Train for more epochs, and on larger datasets 
+4. Permute data in dataloader
 
 ### GPU Tips
 - Monitor status: `watch nvidia-smi`
