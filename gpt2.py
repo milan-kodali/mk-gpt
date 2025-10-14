@@ -349,8 +349,8 @@ if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     torch.mps.manual_seed(42)
 
 # set sampling parameters
-num_return_sequences = 5
-max_length = 30
+num_return_sequences = 4
+max_length = 32
 
 # sample from pretrained model
 # sample_sequences(num_return_sequences, max_length, device)
@@ -373,14 +373,22 @@ val_loader = DataLoaderLite(B=B, T=T, rank=ddp_rank, world_size=ddp_world_size, 
 
 def evaluate(model, device, val_loader):
   model.eval()
-  total_loss = 0
+  val_loader.reset()
   with torch.no_grad():
-    x, y = val_loader.next_batch()
-    x, y = x.to(device), y.to(device)
-    logits, loss = model(x, y)
-    print(f"-----\nval loss: {loss.item():.4f}\n-----")
-  model.train()
-  return loss.item()
+    val_loss_accum = 0.0
+    val_loss_steps = 10
+    for _ in range(val_loss_steps):
+      x, y = val_loader.next_batch()
+      x, y = x.to(device), y.to(device)
+      with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        logits, loss = model(x, y)
+      loss = loss / val_loss_steps
+      val_loss_accum += loss.detach()
+  if ddp:
+    dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+  if master_process:
+    print(f"-----\nval loss: {val_loss_accum.item():.4f}\n-----")
+
 
 # Use TF32 for operations on FP32s
 torch.set_float32_matmul_precision('high')
@@ -444,6 +452,7 @@ if ddp:
 for step in range(start_step, max_steps):
   # timing
   t0 = time.time()
+  model.train()
   optimizer.zero_grad(set_to_none=True)
   #track loss across micro-batches
   accum_loss = 0
@@ -479,12 +488,12 @@ for step in range(start_step, max_steps):
   
   if master_process:
     print(f"step {step}: | train_loss {accum_loss.item():.4f} | lr {lr:.2e} | norm {norm:.3f} | dt {dt:.2f}s | tps {int(tokens_per_sec)}")
-    if (step + 1) % checkpoint_interval == 0:
+    if step % checkpoint_interval == 0:
       evaluate(model, device, val_loader)
-      model_to_save = model.module if ddp else model
-      torch.save({'model': model_to_save.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, os.path.join(checkpoint_dir, model_file_name))
+      if step > 0:
+        model_to_save = model.module if ddp else model
+        torch.save({'model': model_to_save.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, os.path.join(checkpoint_dir, model_file_name))
+        sample_sequences(num_return_sequences, max_length, device, model)
       
 if ddp:
   destroy_process_group()
-
-if master_process: sample_sequences(num_return_sequences, max_length, device, model)
