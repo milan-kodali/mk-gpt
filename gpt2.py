@@ -224,29 +224,33 @@ class GPT(nn.Module):
     optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused) #betas, eps match GPT3 paper
     return optimizer
 
+def load_tokens(filename):
+  tokens = np.load(filename)
+  return torch.tensor(tokens, dtype=torch.long)
+
 class DataLoaderLite:
-  def __init__(self, B, T, rank, world_size, split = 'train'):
+  def __init__(self, B, T, rank, world_size, split = 'train', verbose = True):
     self.B = B
     self.T = T
     self.rank = rank
     self.world_size = world_size
+    self.verbose = verbose
 
     assert split in ['train', 'val'], "split must be either 'train' or 'val'"
     self.split = split
 
     data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'storage', 'data', 'fineweb-edu10b')
-    self.shards = [f for f in os.listdir(data_dir) if f.startswith(f'fineweb_edu10b_{self.split}') and f.endswith('.npy')]
-    self.shards = [os.path.join(data_dir, f) for f in self.shards]
-    self.shards = sorted(self.shards)
+    shards = [f for f in os.listdir(data_dir) if f.startswith(f'fineweb_edu10b_{self.split}') and f.endswith('.npy')]
+    shards = [os.path.join(data_dir, f) for f in shards]
+    self.shards = sorted(shards)
     self.shard_count = len(self.shards)
     self.shard_index = 0
-    print(f"Found {len(self.shards)} shards for {split} split")
+    if self.verbose: print(f"Found {len(self.shards)} shards for {split} split")
     
     # load tokens from first shard as numpy array
-    tokens = np.load(self.shards[self.shard_index])    
-    self.tokens = torch.tensor(tokens, dtype=torch.int)
-    print(f"Loaded {len(self.tokens)} tokens from shard {self.shard_index}")
-    print(f"1 epoch has approx {len(tokens) * self.shard_count // (B * T)} minibatches\n-----")
+    self.tokens = load_tokens(self.shards[self.shard_index])    
+    if self.verbose: print(f"Loaded {len(self.tokens)} tokens from shard {self.shard_index}")
+    if self.verbose: print(f"1 epoch has approx {len(self.tokens) * self.shard_count // (B * T)} minibatches\n-----")
 
     # state
     self.current_position = rank * B * T
@@ -260,22 +264,17 @@ class DataLoaderLite:
     return x, y
 
   def next_shard(self):
-    print(f"-----\nLoading {self.split} shard {self.shard_index + 1} of {self.shard_count} for GPU {self.rank}\n-----")
-    if self.shard_index < self.shard_count - 1:
-      self.shard_index += 1
-    else:
-      self.shard_index = 0
-    tokens = np.load(self.shards[self.shard_index])
-    self.tokens = torch.tensor(tokens, dtype=torch.int)
+    self.shard_index = (self.shard_index + 1) % self.shard_count
+    if self.verbose: print(f"-----\nLoading {self.split} shard {self.shard_index} of {self.shard_count} for GPU {self.rank}\n-----")
+    self.tokens = load_tokens(self.shards[self.shard_index])
 
   def step(self, num_steps = 1):
     for i in range(num_steps):
       B, T, world_size, rank = self.B, self.T, self.world_size, self.rank
       self.current_position += B * T * world_size
       # reset if next batch would be out of bounds
-      next_position = self.current_position + B * T * world_size
-      token_length = len(self.tokens)
-      if next_position > token_length:
+      next_position = self.current_position + B * T * world_size + 1
+      if next_position > len(self.tokens):
         self.next_shard()
         self.current_position = rank * B * T
         
@@ -369,8 +368,8 @@ assert total_batch_size % (B * T * ddp_world_size) == 0, "total_batch_size must 
 grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
 if master_process: print(f"Using grad accumulation w/ {grad_accum_steps} steps per batch of {total_batch_size} tokens\n-----")
 
-train_loader = DataLoaderLite(B=B, T=T, rank=ddp_rank, world_size=ddp_world_size, split='train')
-val_loader = DataLoaderLite(B=B, T=T, rank=0, world_size=1, split='val')
+train_loader = DataLoaderLite(B=B, T=T, rank=ddp_rank, world_size=ddp_world_size, split='train', verbose=master_process)
+val_loader = DataLoaderLite(B=B, T=T, rank=0, world_size=1, split='val', verbose=master_process)
 
 def evaluate(model, device, val_loader):
   model.eval()
@@ -401,7 +400,7 @@ max_lr = 6e-4 # matches GPT-3 small
 min_lr = max_lr * 0.1 # matches GPT-3 small
 warmup_steps = 715 #375e6 warmup tokens / 524288 batch size = 715 steps
 max_steps = 19073 #10e9 tokens / 524288 batch size = 19073 steps
-decay_horizon = max_steps * .87 # proportional to gpt-3 decay horizon
+decay_horizon = max_steps # doesn't match proportion of gpt-3 decay horizon
 start_step = 0
 checkpoint_interval = 100
 
