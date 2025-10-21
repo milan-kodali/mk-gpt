@@ -18,7 +18,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from data_loader import DataLoaderLite
 from mk_gpt import GPT, GPTConfig
-from sample import sample_sequences
+from sample_gpt import sample_sequences
 
 # set sampling parameters
 num_return_sequences = 4
