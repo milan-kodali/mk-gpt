@@ -1,5 +1,5 @@
-.DS_Store
-utils/chat_copy.db
 __pycache__/
-/storage
-/data
+/.cache
+
+#macOS
+.DS_Store
