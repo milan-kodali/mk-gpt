@@ -109,7 +109,7 @@ if "cuda" in device:
 max_lr = 6e-4 # matches GPT-3 small
 min_lr = max_lr * 0.1 # matches GPT-3 small
 warmup_steps = 715 #375e6 warmup tokens / 524288 batch size = 715 steps
-max_steps = 19073 #10e9 tokens / 524288 batch size = 19073 steps
+max_steps = 19073 * 2 #10e9 tokens / 524288 batch size = 19073 steps * 2 for longer training
 decay_horizon = max_steps # doesn't match proportion of gpt-3 decay horizon
 start_step = 0
 checkpoint_interval = 100
