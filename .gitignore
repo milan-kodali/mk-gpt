@@ -1,5 +1,7 @@
 __pycache__/
 /.cache
+tmp_*
 
 #macOS
 .DS_Store
+
