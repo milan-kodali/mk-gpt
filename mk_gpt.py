@@ -3,14 +3,12 @@ from scratch GPT model
 '''
 
 import inspect
-
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from dataclasses import dataclass
 import tiktoken
-
+from dataclasses import dataclass
 
 @dataclass
 class GPTConfig:
@@ -23,7 +21,7 @@ class GPTConfig:
 
 class GPT2Attention(nn.Module):
     """ multiple self-attention heads in parallel """
-    def __init__(self, config):
+    def __init__(self, config, is_decoder=True):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, batched together
@@ -34,8 +32,10 @@ class GPT2Attention(nn.Module):
 
         self.n_head = config.n_head
         self.n_embd = config.n_embd
-
-        self.register_buffer('bias', torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size)) 
+        self.is_decoder = is_decoder
+        
+        if is_decoder:
+          self.register_buffer('bias', torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size)) 
 
 
     def forward(self, x):
@@ -56,7 +56,7 @@ class GPT2Attention(nn.Module):
         # y = wei @ v  # (B, n_head, T, T) @ (B, n_head, T, head_size) -> (B, n_head, T, head_size)
         
         # use flash attention (algorithmically identical) for ~50% speedup
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # (B, n_head, T, head_size)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=self.is_decoder) # (B, n_head, T, head_size)
 
         
         y = y.transpose(1, 2).reshape(B, T, -1) # (B, n_head, T, head_size) -> (B, T, n_head * head_size)
@@ -84,10 +84,10 @@ class GPT2MLP(nn.Module):
 class GPT2Block(nn.Module):
     """ Transformer block: Communication followed by computation, with residual connection (x +) """ 
 
-    def __init__(self, config):
+    def __init__(self, config, is_decoder=True):
         super().__init__()
         self.ln_1 = nn.LayerNorm(config.n_embd) # ToDo: Understand
-        self.attn = GPT2Attention(config)
+        self.attn = GPT2Attention(config, is_decoder=is_decoder)
         self.ln_2 = nn.LayerNorm(config.n_embd) # ToDo: Understand
         self.mlp = GPT2MLP(config) 
 
