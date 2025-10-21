@@ -25,7 +25,7 @@ num_return_sequences = 4
 max_length = 32
 
 # set up DDP using env variables set by torchrun (RANK, LOCAL_RANK and WORLD_SIZE)
-# use `torchrun --standalone --nproc_per_node=4 train.py third_attempt.pt` to run on 4 GPUs
+# use `torchrun --standalone --nproc_per_node=2 train_gpt.py third_attempt.pt` to run on 2 GPUs
 # GPU count must be power of 2 for batch size assumptions
 ddp = int(os.environ.get("RANK", -1)) != -1
 if ddp:
