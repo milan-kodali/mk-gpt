@@ -14,7 +14,7 @@ echo "downloading from s3"
 FOLDERS=("checkpoints" "data")
 for folder in ${FOLDERS[@]}; do
     SRC="s3://$S3_BUCKET/$folder/"
-    DEST="./storage/$folder/"
+    DEST="./.cache/$folder/"
     mkdir -p "$DEST"
     aws s3 sync "$SRC" "$DEST"
 done
