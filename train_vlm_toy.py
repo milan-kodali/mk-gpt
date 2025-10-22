@@ -143,49 +143,58 @@ def sample_toy_datasets():
   print("--------------------------------\nSampling toy val dataset\n--------------------------------")
   sample_dataset(dataset_val)
 
+# ------------------------------
+# Toy Training Loop
+# ------------------------------
+
+def train(steps=1000):
+
+  # Only optimize trainable parameters (ViT + projector, NOT frozen decoder)
+  trainable_params = [p for p in model.parameters() if p.requires_grad]
+  optimizer = torch.optim.AdamW(trainable_params, lr=1e-5)
+
+  enc = tiktoken.get_encoding("gpt2")
+  model.train()
+  model.to(device)  # Move once, not in loop
+
+  for step in range(steps):
+    image, label = dataset_train[step % len(dataset_train)]
+    
+    # Add batch dimension
+    image = image.unsqueeze(0).to(device)  # (1, 3, 24, 24)
+    
+    # Prepare input-target pair
+    full_text = "This is an image of a " + label
+    full_tokens = enc.encode(full_text)
+    
+    # Autoregressive: input[t] predicts target[t]
+    input_tokens = torch.tensor(full_tokens[:-1], dtype=torch.long).unsqueeze(0).to(device)
+    target_tokens = torch.tensor(full_tokens[1:], dtype=torch.long).unsqueeze(0).to(device)
+    
+    # Forward pass
+    logits, loss = model(image, input_tokens, target_tokens)
+    
+    # Backward pass
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    
+    if step % 10 == 0:
+      print(f"Step {step}: Loss {loss.item():.4f}")
+
+
+# ------------------------------
+# Script
+# ------------------------------
+
 print("--------------------------------\nSampling before training\n--------------------------------")
 sample_toy_datasets()
 
 print("--------------------------------\nTraining\n--------------------------------")
 
-# ------------------------------
-# Toy Training Loop
-# ------------------------------
-
-steps = 5000
-# Only optimize trainable parameters (ViT + projector, NOT frozen decoder)
-trainable_params = [p for p in model.parameters() if p.requires_grad]
-optimizer = torch.optim.AdamW(trainable_params, lr=1e-5)
-
-enc = tiktoken.get_encoding("gpt2")
-model.train()
-model.to(device)  # Move once, not in loop
-
-for step in range(steps):
-  image, label = dataset_train[step % len(dataset_train)]
-  
-  # Add batch dimension
-  image = image.unsqueeze(0).to(device)  # (1, 3, 24, 24)
-  
-  # Prepare input-target pair
-  full_text = "This is an image of a " + label
-  full_tokens = enc.encode(full_text)
-  
-  # Autoregressive: input[t] predicts target[t]
-  input_tokens = torch.tensor(full_tokens[:-1], dtype=torch.long).unsqueeze(0).to(device)
-  target_tokens = torch.tensor(full_tokens[1:], dtype=torch.long).unsqueeze(0).to(device)
-  
-  # Forward pass
-  logits, loss = model(image, input_tokens, target_tokens)
-  
-  # Backward pass
-  optimizer.zero_grad()
-  loss.backward()
-  optimizer.step()
-  
-  if step % 10 == 0:
-    print(f"Step {step}: Loss {loss.item():.4f}")
-
+train()
 
 print("--------------------------------\nSampling after training\n--------------------------------")
 sample_toy_datasets()
+
+import code; code.interact(local=locals())
