@@ -11,7 +11,7 @@ from multiprocessing import Pool
 # ------------------------------
 shard_size = 250
 img_size = 384
-num_workers = 2  # Number of parallel workers
+n_proc = 8  # Number of parallel workers
 
 # ------------------------------
 # Create directory for shards
@@ -33,7 +33,7 @@ ds = iter(ds)
 # Transform for converting images to tensors with fixed size
 # ------------------------------
 itot = transforms.Compose([
-    transforms.Resize((512, 512)),
+    transforms.Resize((img_size, img_size)),
     transforms.ToTensor()
 ])
 
@@ -96,12 +96,12 @@ def transform_image(image):
 
 if __name__ == "__main__":
   print(f"Starting to process dataset with shard_size={shard_size}")
-  print(f"Using {num_workers} workers for parallel image processing")
+  print(f"Using {n_proc} parallel processes")
   print(f"Filtering for labels starting with {len(prefix_set)} prefixes")
   print(f"Resizing all images to {img_size}x{img_size}")
 
   try:
-    with Pool(num_workers) as pool:
+    with Pool(n_proc) as pool:
       pending_images = []
       pending_labels = []
       
@@ -127,7 +127,7 @@ if __name__ == "__main__":
           pending_labels.append(label)
           
           # Process images in parallel when we have enough
-          if len(pending_images) >= num_workers:
+          if len(pending_images) >= n_proc:
             image_tensors = pool.map(transform_image, pending_images)
             current_shard_images.extend(image_tensors)
             current_shard_labels.extend(pending_labels)
@@ -167,7 +167,7 @@ if __name__ == "__main__":
   except StopIteration:
     # Process any remaining pending images
     if pending_images:
-      with Pool(num_workers) as pool:
+      with Pool(n_proc) as pool:
         image_tensors = pool.map(transform_image, pending_images)
         current_shard_images.extend(image_tensors)
         current_shard_labels.extend(pending_labels)
