@@ -9,5 +9,5 @@ class GPTConfig:
     n_head: int = 12
     n_embd: int = 768
 
-step: 21000
-val loss: 3.2596
+step: 22900
+val loss: 3.2320
