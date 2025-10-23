@@ -13,7 +13,7 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 #----
-local_dir = "../data/fineweb-edu10b"
+local_dir = "../.cache/data/fineweb-edu10b"
 sample_name = "sample-10BT"
 shard_size = int(1e8)
 nprocs = max(1, os.cpu_count())
