@@ -1,5 +1,6 @@
 '''
-from scratch VLM model, using mk_gpt for language decoder
+From scratch VLM model, using mk_gpt for language decoder
+Needs quite a bit of work 😅
 '''
 
 import inspect
@@ -15,10 +16,11 @@ from dataclasses import dataclass, field
 import tiktoken
 
 from mk_gpt import GPT, GPTConfig, GPT2Block
+from data_loader_vlm import DataLoaderVLM
 
 @dataclass
 class VLMConfig:
-  img_size: int = 96
+  img_size: int = 384
   patch_size: int = 16
   n_embd: int = 768
   n_head: int = 12
@@ -215,6 +217,24 @@ class VLM(nn.Module):
     total = sum(p.numel() for p in self.parameters())
     return trainable, total
 
+  def configure_optimizers(self, weight_decay, learning_rate, device, verbose=False):
+    param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
+    decay_params = [p for p in param_dict.values() if p.dim() >= 2]
+    nodecay_params = [p for p in param_dict.values() if p.dim() < 2]
+    optim_groups = [
+      {"params": decay_params, "weight_decay": weight_decay},
+      {"params": nodecay_params, "weight_decay": 0.0}
+    ]
+    num_decay_params = sum(p.numel() for p in decay_params)
+    num_nodecay_params = sum(p.numel() for p in nodecay_params)
+    if verbose: print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+    if verbose: print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+    fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+    use_fused = fused_available and 'cuda' in device
+    if verbose: print(f"using fused AdamW: {use_fused}\n-----")
+    optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused) #betas, eps match GPT3 paper
+    return optimizer
+
 
 # ------------------------------
 # Misc Utils
@@ -237,3 +257,128 @@ def load_image(image_name):
   return Image.open(filename).convert("RGB")
 
 # ------------------------------
+# Sampling code
+# ------------------------------
+
+# set sampling parameters
+num_return_sequences = 1
+max_length = 32
+default_prefix = "This is an image of a"
+
+def sample_sequences(num_return_sequences, max_length, device, model, img_array = None, prefix = default_prefix):
+  # load model
+  model.eval() # set model to evaluation mode
+  model.to(device)
+
+  # set up prefix tokens for sampling
+  enc = tiktoken.get_encoding("gpt2")
+  tokens = enc.encode(prefix)
+  tokens = torch.tensor(tokens, dtype=torch.long)
+  tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+  x = tokens.to(device) # (B = num_return_sequences, prefix_length)
+  sample_rng = torch.Generator(device=device)
+  sample_rng.manual_seed(42)
+  # sample
+  while(x.size(1) < max_length):
+    with torch.no_grad():
+      logits, loss = model(img_array,x) # (B, T, vocab_size)
+      logits = logits[:, -1, :] # (B, vocab_size)
+      probs = F.softmax(logits, dim = -1) # (B, vocab_size)
+      # Add top-k sampling to match HF default
+      topk_probs, topk_indices = torch.topk(probs, 50, dim = -1) # (B, 50) for both
+      ix = torch.multinomial(topk_probs, 1, generator=sample_rng) # (B, 1)
+      x_col = torch.gather(topk_indices, -1, ix) # (B, 1)
+      x = torch.cat((x, x_col), dim = 1) # (B, T + 1)
+
+  # decode
+  for i in range(num_return_sequences):
+    tokens = x[i, :max_length].tolist()
+    decoded = enc.decode(tokens)
+    print(f"> {i}: {decoded}\n")
+
+# ------------------------------
+# Create Model & Load Pretrained Decoder
+# ------------------------------
+
+device = "cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"
+print(f"Using {device} device\n-----")
+
+# Set seed across all device types
+torch.manual_seed(42)
+if "cuda" in device:
+    torch.cuda.manual_seed_all(42)
+if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    torch.mps.manual_seed(42)
+
+model = VLM(VLMConfig())
+model.to(device)
+
+model.load_gpt_checkpoint("third_attempt.pt", freeze=True, verbose=True)
+
+# ------------------------------
+# Set up training batches
+# ------------------------------
+
+T = 1024 # sequence length
+B = 32 # start with small batch size
+
+train_loader = DataLoaderVLM(B=B, T=T, split='train', verbose=True)
+val_loader = DataLoaderVLM(B=1, T=T, split='val', verbose=False)
+
+encoder = tiktoken.get_encoding("gpt2")
+
+batch = train_loader.next_batch()
+images, input_tokens, target_tokens = batch
+# print(images.shape)
+# print(input_tokens.shape)
+# print(target_tokens.shape)
+
+lr = 1e-3
+weight_decay = 0.1
+max_steps = 1000
+optimizer = model.configure_optimizers(weight_decay, lr, device, verbose=True)
+
+def train(steps=max_steps):
+  model.train()
+  for step in range(steps):
+    images, input_tokens, target_tokens = train_loader.next_batch()
+    images = images.to(device)
+    input_tokens = input_tokens.to(device)
+    target_tokens = target_tokens.to(device)
+    
+    logits, loss = model(images, input_tokens, target_tokens)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    print(f"Step {step}: Loss {loss.item():.4f}")
+
+def generate(image, input_tokens, max_new_tokens):
+  model.eval()
+  image = image.to(device)
+  input_tokens = input_tokens.to(device)
+  # sample tokens
+  while(input_tokens.size(1) < max_new_tokens):
+    with torch.no_grad():
+      logits, loss = model(image, input_tokens)
+      logits = logits[:, -1, :] # (B, vocab_size)
+      probs = F.softmax(logits, dim = -1) # (B, vocab_size)
+      ix = torch.multinomial(probs, 1) # (B, 1)
+      input_tokens = torch.cat((input_tokens, ix), dim = 1) # (B, T + 1)
+  return encoder.decode(input_tokens[0, 1:100].tolist())
+
+def evaluate():
+  model.eval()
+  images, input_tokens, target_tokens = val_loader.next_batch()
+  images = images.to(device)
+  input_tokens = torch.tensor(encoder.encode("This is an image of"), dtype=torch.long).to(device).unsqueeze(0)
+  target_tokens = target_tokens.to(device)
+  
+  expected_output = encoder.decode(target_tokens[0, :100].tolist())
+  generated_output = generate(images, input_tokens, max_new_tokens=100)
+  print(f"-------\nExpected Output: This{expected_output}")
+  print(f"-------\nGenerated Output: {generated_output}")
+  print(f"-------\n")
+  
+train(1)
+evaluate()
+import code; code.interact(local=locals())
